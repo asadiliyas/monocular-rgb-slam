@@ -24,10 +24,10 @@ export async function extractFrames(inputPath: string, options: ExtractOptions =
     throw new Error("ffmpeg-static did not resolve a bundled ffmpeg binary for this platform.");
   }
 
-  const fps = options.fps ?? 8;
+  const fps = options.fps ?? 6;
   const width = options.width ?? 640;
   const height = options.height ?? 360;
-  const maxDurationSec = options.maxDurationSec ?? 12;
+  const maxDurationSec = options.maxDurationSec ?? 10;
 
   const filter = `fps=${fps},scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`;
 

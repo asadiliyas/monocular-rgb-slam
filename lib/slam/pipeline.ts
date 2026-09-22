@@ -115,8 +115,8 @@ export async function runSlamPipeline(videoPath: string, options: PipelineOption
 
   const extractStart = Date.now();
   const frameSet = await extractFrames(videoPath, {
-    maxDurationSec: options.maxDurationSec ?? 12,
-    fps: options.fps ?? 8,
+    maxDurationSec: options.maxDurationSec ?? 10,
+    fps: options.fps ?? 6,
     width: options.width ?? 640,
     height: options.height ?? 360,
   });

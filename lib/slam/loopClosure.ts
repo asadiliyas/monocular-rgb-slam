@@ -5,6 +5,18 @@ import type { CameraIntrinsics, Keyframe, MapPoint, Pose } from "./types.ts";
 
 const MIN_KEYFRAME_GAP = 12;
 const MIN_LOOP_MATCHES = 30;
+/** Caps candidate checks per attempt so cost stays roughly linear in video length instead of
+ * quadratic (checking every earlier keyframe on every attempt is O(keyframes^2) overall). An
+ * evenly-spaced subsample is virtually as effective at catching a revisit for short clips. */
+const MAX_LOOP_CANDIDATES = 20;
+
+function subsampleEvenly<T>(items: T[], maxCount: number): T[] {
+  if (items.length <= maxCount) return items;
+  const step = items.length / maxCount;
+  const picked: T[] = [];
+  for (let i = 0; i < maxCount; i++) picked.push(items[Math.floor(i * step)]);
+  return picked;
+}
 
 function poseRelativeTo(reference: Pose, pose: Pose): Pose {
   // R_rel = R * R_ref^T, t_rel = t - R_rel * t_ref  (transform from `reference`'s camera frame to `pose`'s)
@@ -81,7 +93,7 @@ export async function detectAndCorrectLoopClosure(
   const currentIdx = allKeyframes.findIndex((kf) => kf.id === currentKeyframe.id);
   if (currentIdx < MIN_KEYFRAME_GAP) return null;
 
-  const candidates = allKeyframes.slice(0, currentIdx - MIN_KEYFRAME_GAP + 1);
+  const candidates = subsampleEvenly(allKeyframes.slice(0, currentIdx - MIN_KEYFRAME_GAP + 1), MAX_LOOP_CANDIDATES);
   if (candidates.length === 0) return null;
 
   let bestCandidate: Keyframe | null = null;

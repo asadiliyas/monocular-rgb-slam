@@ -105,7 +105,7 @@ export default function Home() {
           >
             Choose a video
           </button>
-          <p className="mt-2 text-xs text-neutral-400">MP4/MOV, up to 150MB. Only the first ~12s are processed.</p>
+          <p className="mt-2 text-xs text-neutral-400">MP4/MOV, up to 150MB. Only the first ~10s are processed.</p>
         </div>
 
         {status === "processing" && (

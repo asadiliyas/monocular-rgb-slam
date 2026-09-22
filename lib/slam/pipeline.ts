@@ -21,15 +21,16 @@ import type { CameraIntrinsics, Keyframe, MapPoint, Pose, PipelineResult, Vec3 }
 export interface PipelineOptions {
   maxDurationSec?: number;
   fps?: number;
-  width?: number;
-  height?: number;
+  maxDimension?: number;
   maxFeatures?: number;
   bundleAdjustEveryNKeyframes?: number;
   loopClosureEveryNKeyframes?: number;
 }
 
+const REFERENCE_FRAME_CANDIDATES = [0, 6, 12, 18];
+const MIN_REFERENCE_KEYPOINTS = 50;
 const BOOTSTRAP_OFFSETS = [3, 5, 8, 12, 16, 20, 25, 30];
-const MIN_BOOTSTRAP_INLIERS = 40;
+const MIN_BOOTSTRAP_INLIERS = 30;
 const MIN_NEW_POINT_MATCHES = 8;
 const MAX_REPROJECTION_ERROR_PX = 6;
 const MIN_PARALLAX_DEG = 1.0;
@@ -117,8 +118,7 @@ export async function runSlamPipeline(videoPath: string, options: PipelineOption
   const frameSet = await extractFrames(videoPath, {
     maxDurationSec: options.maxDurationSec ?? 10,
     fps: options.fps ?? 6,
-    width: options.width ?? 640,
-    height: options.height ?? 360,
+    maxDimension: options.maxDimension ?? 640,
   });
   const frameExtractionMs = Date.now() - extractStart;
 
@@ -140,37 +140,63 @@ export async function runSlamPipeline(videoPath: string, options: PipelineOption
     return f;
   };
 
-  const feat0 = await getFeatures(0);
-
-  // --- Bootstrap: find the first later frame with enough parallax relative to frame 0 ---
+  // --- Bootstrap: find a reference frame with usable texture, then a later frame with
+  // enough parallax relative to it. The reference frame also advances (not just the offset)
+  // because a fixed frame 0 can't be fixed by trying different later frames if frame 0 itself
+  // is the problem - e.g. motion blur or a featureless view in the first moment of a handheld
+  // recording, while the camera is still being raised into position. ---
+  let referenceIdx = -1;
+  let featRef: Awaited<ReturnType<typeof getFeatures>> | null = null;
   let bootstrapIdx = -1;
   let bootstrapMatches: { queryIdx: number; trainIdx: number }[] = [];
   let bootstrapResult: RecoveredPose | null = null;
+  const bootstrapAttempts: string[] = [];
 
-  for (const offset of BOOTSTRAP_OFFSETS) {
-    if (offset >= frameSet.frames.length) break;
-    const featI = await getFeatures(offset);
-    const found = await timeAsync("poseEstimationMs", async () => {
-      const matches = await matchDescriptors(feat0.descriptors, featI.descriptors, 0.75);
-      if (matches.length < MIN_BOOTSTRAP_INLIERS) return null;
+  outer: for (const refCandidate of REFERENCE_FRAME_CANDIDATES) {
+    if (refCandidate >= frameSet.frames.length) break;
+    const candidateFeat = await getFeatures(refCandidate);
+    if (candidateFeat.keypoints.length < MIN_REFERENCE_KEYPOINTS) {
+      bootstrapAttempts.push(`reference frame ${refCandidate}: only ${candidateFeat.keypoints.length} keypoints, trying a later reference frame`);
+      continue;
+    }
+    referenceIdx = refCandidate;
+    featRef = candidateFeat;
 
-      const pts1: Point2[] = matches.map((m) => [feat0.keypoints[m.queryIdx].x, feat0.keypoints[m.queryIdx].y]);
-      const pts2: Point2[] = matches.map((m) => [featI.keypoints[m.trainIdx].x, featI.keypoints[m.trainIdx].y]);
-      const result = recoverPoseAndPoints(pts1, pts2, K, { iterations: 400, pixelThreshold: 3 });
-      if (result && result.points.length >= MIN_BOOTSTRAP_INLIERS) {
-        return { matches, result };
+    for (const relOffset of BOOTSTRAP_OFFSETS) {
+      const offset = refCandidate + relOffset;
+      if (offset >= frameSet.frames.length) break;
+      const featI = await getFeatures(offset);
+      const found = await timeAsync("poseEstimationMs", async () => {
+        const matches = await matchDescriptors(featRef!.descriptors, featI.descriptors, 0.75);
+        if (matches.length < MIN_BOOTSTRAP_INLIERS) {
+          bootstrapAttempts.push(
+            `ref ${refCandidate} -> frame ${offset}: ${featRef!.keypoints.length}/${featI.keypoints.length} keypoints, ${matches.length} matches (need ${MIN_BOOTSTRAP_INLIERS})`
+          );
+          return null;
+        }
+
+        const pts1: Point2[] = matches.map((m) => [featRef!.keypoints[m.queryIdx].x, featRef!.keypoints[m.queryIdx].y]);
+        const pts2: Point2[] = matches.map((m) => [featI.keypoints[m.trainIdx].x, featI.keypoints[m.trainIdx].y]);
+        const result = recoverPoseAndPoints(pts1, pts2, K, { iterations: 400, pixelThreshold: 3 });
+        bootstrapAttempts.push(
+          `ref ${refCandidate} -> frame ${offset}: ${featRef!.keypoints.length}/${featI.keypoints.length} keypoints, ${matches.length} matches, ${result?.points.length ?? 0} triangulated (need ${MIN_BOOTSTRAP_INLIERS})`
+        );
+        if (result && result.points.length >= MIN_BOOTSTRAP_INLIERS) {
+          return { matches, result };
+        }
+        return null;
+      });
+      if (found) {
+        bootstrapIdx = offset;
+        bootstrapMatches = found.matches;
+        bootstrapResult = found.result;
+        break outer;
       }
-      return null;
-    });
-    if (found) {
-      bootstrapIdx = offset;
-      bootstrapMatches = found.matches;
-      bootstrapResult = found.result;
-      break;
     }
   }
 
-  if (bootstrapIdx === -1 || !bootstrapResult) {
+  if (referenceIdx === -1 || bootstrapIdx === -1 || !bootstrapResult || !featRef) {
+    console.error("SLAM bootstrap failed. Attempts:\n" + bootstrapAttempts.join("\n"));
     throw new Error(
       "Could not initialize SLAM from this video: no pair of early frames had enough matched, well-triangulated points. The camera may not have moved enough, or the scene may lack texture."
     );
@@ -183,11 +209,11 @@ export async function runSlamPipeline(videoPath: string, options: PipelineOption
 
   const kf0: Keyframe = {
     id: nextKeyframeId++,
-    frameIndex: 0,
-    timestampSec: frameSet.frames[0].timestampSec,
+    frameIndex: referenceIdx,
+    timestampSec: frameSet.frames[referenceIdx].timestampSec,
     pose: identityPose(),
-    keypoints: feat0.keypoints,
-    descriptors: feat0.descriptors,
+    keypoints: featRef.keypoints,
+    descriptors: featRef.descriptors,
     pointForKeypoint: new Map(),
   };
   const feat1 = await getFeatures(bootstrapIdx);
@@ -208,7 +234,7 @@ export async function runSlamPipeline(videoPath: string, options: PipelineOption
     const mapPoint: MapPoint = {
       id,
       position,
-      descriptor: feat0.descriptors[match.queryIdx],
+      descriptor: featRef.descriptors[match.queryIdx],
       color,
       observations: [
         { keyframeId: kf0.id, keypointIndex: match.queryIdx },

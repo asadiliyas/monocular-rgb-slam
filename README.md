@@ -127,6 +127,28 @@ space, anchored at the matched keyframe. This is a deliberate simplification
 of full pose-graph optimization (no sparse solver, no uncertainty weighting)
 appropriate for short, single-loop clips.
 
+**Aspect ratio is preserved, not forced into a fixed landscape frame.** An
+early version scaled every video into a fixed 640×360 box with letterbox
+padding. That's fine for landscape sources but silently broke portrait ones
+(the overwhelming majority of real handheld phone video): a 1080×1920 clip
+would shrink to fit *within* 640×360, which for that aspect ratio means
+~202×360 of actual content padded with black bars on both sides - discarding
+most of the frame before ORB ever saw it. Caught via a real failed upload
+during testing. Fixed by capping the longer side at 640px and deriving the
+other side to preserve the source's own aspect ratio, with the final
+dimensions parsed back out of ffmpeg's own output (they're no longer fixed
+in advance).
+
+**Bootstrap tries multiple reference frames, not just frame 0.** Two-view
+initialization needs a reference frame with genuine texture; the original
+version always used frame 0 and only searched *later* frames as the second
+view. If frame 0 itself has poor texture (motion blur while the phone is
+still being raised, a moment pointed at the floor or sky at the very start
+of a recording), no later frame can fix that, since frame 0 stays the fixed
+query side of every match attempt. The bootstrap now also advances the
+reference frame itself (trying frame 0, then a few candidates further in) if
+the current one doesn't have enough keypoints to be viable at all.
+
 **No camera calibration step.** Intrinsics are approximated from the video's
 resolution assuming a ~65° horizontal field of view (typical for a phone
 camera) — see [Known limitations](#known-limitations).

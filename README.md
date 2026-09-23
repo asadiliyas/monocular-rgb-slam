@@ -14,6 +14,7 @@ a sparse 3D point cloud, visualized in the browser.
 - [Deployment](#deployment)
 - [Known limitations](#known-limitations)
 - [Measured performance](#measured-performance)
+- [AI usage](#ai-usage)
 
 ## Quick start
 
@@ -307,3 +308,48 @@ performance is meaningfully hardware-dependent: the same image processes a
 ~6.5-7.8s on the free-tier instance actually serving the live URL. The
 timing breakdown is also reported live in the app's UI for any video you
 upload, via the "Timing breakdown" panel under the results.
+
+## AI usage
+
+**Tool:** Claude Code (Anthropic), used throughout as a pair-programming and
+debugging partner for this assignment.
+
+**What it was used for:**
+- Implementing the SLAM pipeline end to end: ORB feature detection wiring,
+  the hand-rolled two-view geometry (fundamental/essential matrix estimation,
+  pose recovery, DLT triangulation) and the small linear-algebra kernel
+  behind it, PnP-based per-frame tracking, windowed bundle adjustment, and
+  loop-closure detection/correction.
+- The Next.js upload UI, the react-three-fiber trajectory/point-cloud viewer,
+  and the `/api/process` route.
+- Docker packaging and the AWS EC2 (free-tier) deployment setup.
+- Debugging two real bugs surfaced by testing the deployed app against real
+  video: portrait-video letterboxing that was destroying most of the frame
+  before feature detection ever ran, and an O(keyframes²) loop-closure search
+  that pushed a 10s video's processing time over the 10-second budget.
+- End-to-end verification: uploading real and synthetic test videos against
+  the live deployed endpoint to confirm the pipeline tracks correctly, stays
+  within the timing budget, and fails gracefully (rather than crashing) on
+  degenerate input such as a video with no camera motion.
+
+**AI-generated architecture/code adopted:** the overall approach of
+hand-rolling the two-view geometry and bundle-adjustment math in TypeScript
+rather than pulling in a Python/OpenCV-Python service — validated against
+synthetic ground-truth data before being wired into the pipeline; tracking
+against the accumulated 3D map (not naive frame-to-frame chaining) as the
+primary drift-control mechanism; windowed/alternating bundle adjustment as a
+deliberately simpler stand-in for a full joint sparse solve; and the EC2
+free-tier deployment path over App Runner/Fargate once those were found to
+conflict with a $0 budget constraint. All of these are discussed with their
+tradeoffs in [Major technical decisions](#major-technical-decisions).
+
+**Rejected or modified:** an early pass added optional Supabase logging
+(upload/job history) to match a preferred stack; it was removed since it
+wasn't required by the assignment and added an external dependency with no
+functional benefit. The initial 8fps/uncapped-loop-closure configuration was
+also reworked after profiling showed it exceeded the 10-second target on the
+actual deployed hardware (see [Measured performance](#measured-performance)).
+
+I reviewed the implementation and reasoning throughout, tested it against
+real and synthetic video on the live deployment myself, and can walk through
+or modify any part of it on request.
